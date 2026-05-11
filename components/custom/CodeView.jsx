@@ -1,9 +1,8 @@
 "use client"
-import React, { useContext, useState, useEffect, useCallback, memo } from 'react';
+import React, { useContext, useState, useEffect, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import Lookup from '@/data/Lookup';
 import { MessagesContext } from '@/context/MessagesContext';
-import axios from 'axios';
 import Prompt from '@/data/Prompt';
 import { useConvex, useMutation } from 'convex/react';
 import { useParams } from 'next/navigation';
@@ -25,6 +24,7 @@ function CodeView() {
     const UpdateFiles = useMutation(api.workspace.UpdateFiles);
     const convex = useConvex();
     const [loading, setLoading] = useState(false);
+    const isGeneratingRef = useRef(false);
 
     const preprocessFiles = useCallback((files) => {
         const processed = {};
@@ -32,10 +32,10 @@ function CodeView() {
             if (typeof content === 'string') {
                 processed[path] = { code: content };
             } else if (content && typeof content === 'object') {
-                if (!content.code && typeof content === 'object') {
-                    processed[path] = { code: JSON.stringify(content, null, 2) };
+                if (content.code) {
+                    processed[path] = { code: content.code };
                 } else {
-                    processed[path] = content;
+                    processed[path] = { code: JSON.stringify(content, null, 2) };
                 }
             }
         });
@@ -43,21 +43,32 @@ function CodeView() {
     }, []);
 
     const GetFiles = useCallback(async () => {
-        const result = await convex.query(api.workspace.GetWorkspace, {
-            workspaceId: id
-        });
-        const processedFiles = preprocessFiles(result?.fileData || {});
-        const mergedFiles = { ...Lookup.DEFAULT_FILE, ...processedFiles };
-        setFiles(mergedFiles);
+        try {
+            const result = await convex.query(api.workspace.GetWorkspace, {
+                workspaceId: id
+            });
+            if (result?.fileData) {
+                const processedFiles = preprocessFiles(result.fileData);
+                const mergedFiles = { ...Lookup.DEFAULT_FILE, ...processedFiles };
+                setFiles(mergedFiles);
+            }
+        } catch (error) {
+            console.error('Error fetching files:', error);
+        }
     }, [id, convex, preprocessFiles]);
 
     useEffect(() => {
-        id && GetFiles();
+        if (id) {
+            GetFiles();
+        }
     }, [id, GetFiles]);
 
-    const GenerateAiCode = useCallback(async () => {
+    const GenerateAiCode = useCallback(async (currentMessages) => {
+        if (isGeneratingRef.current) return;
+        isGeneratingRef.current = true;
         setLoading(true);
-        const PROMPT = JSON.stringify(messages) + " " + Prompt.CODE_GEN_PROMPT;
+        
+        const PROMPT = JSON.stringify(currentMessages) + " " + Prompt.CODE_GEN_PROMPT;
         
         try {
             const response = await fetch('/api/gen-ai-code', {
@@ -67,6 +78,10 @@ function CodeView() {
                 },
                 body: JSON.stringify({ prompt: PROMPT }),
             });
+
+            if (!response.ok) {
+                throw new Error('Failed to generate code');
+            }
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
@@ -86,6 +101,9 @@ function CodeView() {
                             if (data.done && data.final) {
                                 finalData = data.final;
                             }
+                            if (data.error) {
+                                console.error('AI code gen error:', data.error);
+                            }
                         } catch (e) {
                             // Skip invalid JSON
                         }
@@ -94,7 +112,7 @@ function CodeView() {
             }
 
             if (finalData && finalData.files) {
-                const processedAiFiles = preprocessFiles(finalData.files || {});
+                const processedAiFiles = preprocessFiles(finalData.files);
                 const mergedFiles = { ...Lookup.DEFAULT_FILE, ...processedAiFiles };
                 setFiles(mergedFiles);
 
@@ -107,26 +125,24 @@ function CodeView() {
             console.error('Error generating AI code:', error);
         } finally {
             setLoading(false);
+            isGeneratingRef.current = false;
         }
-    }, [messages, id, UpdateFiles, preprocessFiles]);
+    }, [id, UpdateFiles, preprocessFiles]);
 
     useEffect(() => {
-        if (messages?.length > 0) {
-            const role = messages[messages?.length - 1].role;
-            if (role === 'user') {
-                GenerateAiCode();
+        if (messages?.length > 0 && !isGeneratingRef.current) {
+            const lastMessage = messages[messages.length - 1];
+            if (lastMessage.role === 'user') {
+                GenerateAiCode(messages);
             }
         }
     }, [messages, GenerateAiCode]);
     
     const downloadFiles = useCallback(async () => {
         try {
-            // Create a new JSZip instance
             const zip = new JSZip();
             
-            // Add each file to the zip
             Object.entries(files).forEach(([filename, content]) => {
-                // Handle the file content based on its structure
                 let fileContent;
                 if (typeof content === 'string') {
                     fileContent = content;
@@ -134,14 +150,11 @@ function CodeView() {
                     if (content.code) {
                         fileContent = content.code;
                     } else {
-                        // If it's an object without code property, stringify it
                         fileContent = JSON.stringify(content, null, 2);
                     }
                 }
 
-                // Only add the file if we have content
                 if (fileContent) {
-                    // Remove leading slash if present
                     const cleanFileName = filename.startsWith('/') ? filename.slice(1) : filename;
                     zip.file(cleanFileName, fileContent);
                 }
@@ -161,10 +174,8 @@ function CodeView() {
             };
             zip.file("package.json", JSON.stringify(packageJson, null, 2));
 
-            // Generate the zip file
             const blob = await zip.generateAsync({ type: "blob" });
             
-            // Create download link and trigger download
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
@@ -179,77 +190,79 @@ function CodeView() {
     }, [files]);
 
     return (
-        <div className='relative'>
-            <div className='bg-[#181818] w-full p-2 border'>
+        <div className='relative rounded-xl overflow-hidden border border-gray-800'>
+            <div className='bg-[#181818] w-full p-2 border-b border-gray-800'>
                 <div className='flex items-center justify-between'>
                     <div className='flex items-center flex-wrap shrink-0 bg-black p-1 justify-center
                     w-[140px] gap-3 rounded-full'>
                         <h2 onClick={() => setActiveTab('code')}
                             className={`text-sm cursor-pointer 
-                        ${activeTab == 'code' && 'text-blue-500 bg-blue-500 bg-opacity-25 p-1 px-2 rounded-full'}`}>
+                        ${activeTab === 'code' && 'text-blue-500 bg-blue-500 bg-opacity-25 p-1 px-2 rounded-full'}`}>
                             Code</h2>
 
                         <h2 onClick={() => setActiveTab('preview')}
                             className={`text-sm cursor-pointer 
-                        ${activeTab == 'preview' && 'text-blue-500 bg-blue-500 bg-opacity-25 p-1 px-2 rounded-full'}`}>
+                        ${activeTab === 'preview' && 'text-blue-500 bg-blue-500 bg-opacity-25 p-1 px-2 rounded-full'}`}>
                             Preview</h2>
                     </div>
                     
-                    {/* Download Button */}
                     <button
                         onClick={downloadFiles}
-                        className="flex items-center gap-2 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-full transition-colors duration-200"
+                        className="flex items-center gap-2 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-full transition-colors duration-200 text-sm"
                     >
                         <Download className="h-4 w-4" />
-                        <span>Download Files</span>
+                        <span>Export</span>
                     </button>
                 </div>
             </div>
             <SandpackProvider 
-            files={files}
-            template="react" 
-            theme={'dark'}
-            customSetup={{
-                dependencies: {
-                    ...Lookup.DEPENDANCY
-                },
-                entry: '/index.js'
-            }}
-            options={{
-                externalResources: ['https://cdn.tailwindcss.com'],
-                bundlerTimeoutSecs: 120,
-                recompileMode: "immediate",
-                recompileDelay: 300
-            }}
+                files={files}
+                template="react" 
+                theme={'dark'}
+                customSetup={{
+                    dependencies: {
+                        ...Lookup.DEPENDANCY
+                    },
+                    entry: '/index.js'
+                }}
+                options={{
+                    externalResources: ['https://cdn.tailwindcss.com'],
+                    bundlerTimeoutSecs: 120,
+                    recompileMode: "immediate",
+                    recompileDelay: 300
+                }}
             >
                 <div className="relative">
                     <SandpackLayout>
-                        {activeTab=='code'?<>
-                            <SandpackFileExplorer style={{ height: '80vh' }} />
-                            <SandpackCodeEditor 
-                            style={{ height: '80vh' }}
-                            showTabs
-                            showLineNumbers
-                            showInlineErrors
-                            wrapContent />
-                        </>:
-                        <>
+                        {activeTab === 'code' ? (
+                            <>
+                                <SandpackFileExplorer style={{ height: '80vh' }} />
+                                <SandpackCodeEditor 
+                                    style={{ height: '80vh' }}
+                                    showTabs
+                                    showLineNumbers
+                                    showInlineErrors
+                                    wrapContent 
+                                />
+                            </>
+                        ) : (
                             <SandpackPreview 
                                 style={{ height: '80vh' }} 
                                 showNavigator={true}
                                 showOpenInCodeSandbox={false}
                                 showRefreshButton={true}
                             />
-                        </>}
+                        )}
                     </SandpackLayout>
                 </div>
             </SandpackProvider>
 
-            {loading&&<div className='p-10 bg-gray-900 opacity-80 absolute top-0 
-            rounded-lg w-full h-full flex items-center justify-center'>
-                <Loader2Icon className='animate-spin h-10 w-10 text-white'/>
-                <h2 className='text-white'> Generating files...</h2>
-            </div>}
+            {loading && (
+                <div className='p-10 bg-gray-900/90 absolute top-0 rounded-lg w-full h-full flex items-center justify-center z-20'>
+                    <Loader2Icon className='animate-spin h-10 w-10 text-white mr-3'/>
+                    <h2 className='text-white text-lg'>Generating your code...</h2>
+                </div>
+            )}
         </div>
     );
 }

@@ -1,7 +1,14 @@
 import { chatSession } from "@/configs/AiModel";
 
 export async function POST(req) {
-    const {prompt} = await req.json();
+    const { prompt } = await req.json();
+
+    if (!prompt) {
+        return new Response(JSON.stringify({ error: 'Prompt is required' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
 
     try {
         const result = await chatSession.sendMessageStream(prompt);

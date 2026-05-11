@@ -1,7 +1,15 @@
 import { GenAiCode } from '@/configs/AiModel';
 
 export async function POST(req) {
-    const {prompt} = await req.json();
+    const { prompt } = await req.json();
+
+    if (!prompt) {
+        return new Response(JSON.stringify({ error: 'Prompt is required' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
     try {
         const result = await GenAiCode.sendMessageStream(prompt);
         
@@ -15,12 +23,24 @@ export async function POST(req) {
                         fullText += chunkText;
                         controller.enqueue(encoder.encode(`data: ${JSON.stringify({chunk: chunkText})}\n\n`));
                     }
-                    // Send final complete response
+                    // Send final complete response - parse the JSON
                     try {
-                        const parsedData = JSON.parse(fullText);
+                        // Clean up the response - remove markdown code blocks if present
+                        let cleanText = fullText.trim();
+                        if (cleanText.startsWith('```json')) {
+                            cleanText = cleanText.slice(7);
+                        } else if (cleanText.startsWith('```')) {
+                            cleanText = cleanText.slice(3);
+                        }
+                        if (cleanText.endsWith('```')) {
+                            cleanText = cleanText.slice(0, -3);
+                        }
+                        cleanText = cleanText.trim();
+
+                        const parsedData = JSON.parse(cleanText);
                         controller.enqueue(encoder.encode(`data: ${JSON.stringify({final: parsedData, done: true})}\n\n`));
                     } catch (e) {
-                        controller.enqueue(encoder.encode(`data: ${JSON.stringify({error: 'Invalid JSON response', done: true})}\n\n`));
+                        controller.enqueue(encoder.encode(`data: ${JSON.stringify({error: 'Invalid JSON response from AI', raw: fullText.substring(0, 200), done: true})}\n\n`));
                     }
                     controller.close();
                 } catch (e) {
