@@ -1,8 +1,5 @@
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import Provider from "./provider";
-import ConvexClientProvider from "./ConvexClientProvider";
-
 
 export const metadata = {
   title: "AI Website Builder - Build Websites with AI",
@@ -11,14 +8,11 @@ export const metadata = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en" suppressHydrationWarning >
+    <html lang="en" suppressHydrationWarning>
       <body>
-        <ConvexClientProvider>
         <Provider>
-        {children}
+          {children}
         </Provider>
-        </ConvexClientProvider>
-        
       </body>
     </html>
   );

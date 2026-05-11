@@ -4,9 +4,7 @@ import dynamic from 'next/dynamic';
 import Lookup from '@/data/Lookup';
 import { MessagesContext } from '@/context/MessagesContext';
 import Prompt from '@/data/Prompt';
-import { useConvex, useMutation } from 'convex/react';
 import { useParams } from 'next/navigation';
-import { api } from '@/convex/_generated/api';
 import { Loader2Icon, Download } from 'lucide-react';
 import JSZip from 'jszip';
 
@@ -21,8 +19,6 @@ function CodeView() {
     const [activeTab, setActiveTab] = useState('code');
     const [files, setFiles] = useState(Lookup?.DEFAULT_FILE);
     const { messages } = useContext(MessagesContext);
-    const UpdateFiles = useMutation(api.workspace.UpdateFiles);
-    const convex = useConvex();
     const [loading, setLoading] = useState(false);
     const isGeneratingRef = useRef(false);
 
@@ -42,26 +38,38 @@ function CodeView() {
         return processed;
     }, []);
 
-    const GetFiles = useCallback(async () => {
-        try {
-            const result = await convex.query(api.workspace.GetWorkspace, {
-                workspaceId: id
-            });
-            if (result?.fileData) {
-                const processedFiles = preprocessFiles(result.fileData);
-                const mergedFiles = { ...Lookup.DEFAULT_FILE, ...processedFiles };
-                setFiles(mergedFiles);
-            }
-        } catch (error) {
-            console.error('Error fetching files:', error);
-        }
-    }, [id, convex, preprocessFiles]);
-
+    // Load files from localStorage on mount
     useEffect(() => {
-        if (id) {
-            GetFiles();
+        if (id && typeof window !== 'undefined') {
+            try {
+                const stored = localStorage.getItem(`workspace_${id}`);
+                if (stored) {
+                    const workspace = JSON.parse(stored);
+                    if (workspace.files) {
+                        const processedFiles = preprocessFiles(workspace.files);
+                        const mergedFiles = { ...Lookup.DEFAULT_FILE, ...processedFiles };
+                        setFiles(mergedFiles);
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading files:', error);
+            }
         }
-    }, [id, GetFiles]);
+    }, [id, preprocessFiles]);
+
+    // Persist files to localStorage
+    const persistFiles = useCallback((fileData) => {
+        if (id && typeof window !== 'undefined') {
+            try {
+                const stored = localStorage.getItem(`workspace_${id}`);
+                const workspace = stored ? JSON.parse(stored) : { messages: [], files: null, createdAt: Date.now() };
+                workspace.files = fileData;
+                localStorage.setItem(`workspace_${id}`, JSON.stringify(workspace));
+            } catch (error) {
+                console.error('Error persisting files:', error);
+            }
+        }
+    }, [id]);
 
     const GenerateAiCode = useCallback(async (currentMessages) => {
         if (isGeneratingRef.current) return;
@@ -115,11 +123,8 @@ function CodeView() {
                 const processedAiFiles = preprocessFiles(finalData.files);
                 const mergedFiles = { ...Lookup.DEFAULT_FILE, ...processedAiFiles };
                 setFiles(mergedFiles);
-
-                await UpdateFiles({
-                    workspaceId: id,
-                    files: finalData.files
-                });
+                // Persist to localStorage
+                persistFiles(finalData.files);
             }
         } catch (error) {
             console.error('Error generating AI code:', error);
@@ -127,7 +132,7 @@ function CodeView() {
             setLoading(false);
             isGeneratingRef.current = false;
         }
-    }, [id, UpdateFiles, preprocessFiles]);
+    }, [preprocessFiles, persistFiles]);
 
     useEffect(() => {
         if (messages?.length > 0 && !isGeneratingRef.current) {

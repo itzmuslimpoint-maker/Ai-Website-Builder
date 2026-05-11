@@ -1,11 +1,8 @@
 "use client"
 import { MessagesContext } from '@/context/MessagesContext';
 import { Loader2Icon, Send } from 'lucide-react';
-import { api } from '@/convex/_generated/api';
-import { useConvex } from 'convex/react';
 import { useParams } from 'next/navigation';
 import { useContext, useEffect, useState, useCallback, useRef, memo } from 'react';
-import { useMutation } from 'convex/react';
 import Prompt from '@/data/Prompt';
 import ReactMarkdown from 'react-markdown';
 
@@ -36,11 +33,9 @@ MessageItem.displayName = 'MessageItem';
 
 function ChatView() {
     const { id } = useParams();
-    const convex = useConvex();
     const { messages, setMessages } = useContext(MessagesContext);
     const [userInput, setUserInput] = useState('');
     const [loading, setLoading] = useState(false);
-    const UpdateMessages = useMutation(api.workspace.UpdateWorkspace);
     const isGeneratingRef = useRef(false);
     const messagesEndRef = useRef(null);
 
@@ -52,22 +47,36 @@ function ChatView() {
         scrollToBottom();
     }, [messages]);
 
-    const GetWorkSpaceData = useCallback(async () => {
-        try {
-            const result = await convex.query(api.workspace.GetWorkspace, {
-                workspaceId: id
-            });
-            setMessages(result?.messages || []);
-        } catch (error) {
-            console.error('Error fetching workspace:', error);
-        }
-    }, [id, convex, setMessages]);
-
+    // Load workspace messages from localStorage on mount
     useEffect(() => {
-        if (id) {
-            GetWorkSpaceData();
+        if (id && typeof window !== 'undefined') {
+            try {
+                const stored = localStorage.getItem(`workspace_${id}`);
+                if (stored) {
+                    const workspace = JSON.parse(stored);
+                    if (workspace.messages && workspace.messages.length > 0) {
+                        setMessages(workspace.messages);
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading workspace:', error);
+            }
         }
-    }, [id, GetWorkSpaceData]);
+    }, [id, setMessages]);
+
+    // Persist messages to localStorage whenever they change
+    const persistMessages = useCallback((msgs) => {
+        if (id && typeof window !== 'undefined') {
+            try {
+                const stored = localStorage.getItem(`workspace_${id}`);
+                const workspace = stored ? JSON.parse(stored) : { messages: [], files: null, createdAt: Date.now() };
+                workspace.messages = msgs;
+                localStorage.setItem(`workspace_${id}`, JSON.stringify(workspace));
+            } catch (error) {
+                console.error('Error persisting messages:', error);
+            }
+        }
+    }, [id]);
 
     const GetAiResponse = useCallback(async (currentMessages) => {
         if (isGeneratingRef.current) return;
@@ -125,12 +134,9 @@ function ChatView() {
                 }
             }
 
-            // Save to database
+            // Persist to localStorage
             const finalMessages = [...currentMessages, { role: 'ai', content: fullText }];
-            await UpdateMessages({
-                messages: finalMessages,
-                workspaceId: id
-            });
+            persistMessages(finalMessages);
         } catch (error) {
             console.error('Error getting AI response:', error);
             setMessages(prev => [...prev, { role: 'ai', content: 'Sorry, there was an error generating a response. Please try again.' }]);
@@ -138,7 +144,7 @@ function ChatView() {
             setLoading(false);
             isGeneratingRef.current = false;
         }
-    }, [id, UpdateMessages, setMessages]);
+    }, [persistMessages, setMessages]);
 
     useEffect(() => {
         if (messages?.length > 0 && !isGeneratingRef.current) {
