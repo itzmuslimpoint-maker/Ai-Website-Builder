@@ -5,10 +5,15 @@ export async function POST(request) {
     try {
         const { prompt } = await request.json();
         
-        const result = await chatSession.sendMessageStream([
-            Prompt.ENHANCE_PROMPT_RULES,
-            `Original prompt: ${prompt}`
-        ]);
+        if (!prompt) {
+            return new Response(JSON.stringify({ error: 'Prompt is required', success: false }), {
+                status: 400,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
+
+        const fullPrompt = `${Prompt.ENHANCE_PROMPT_RULES}\n\nOriginal prompt: ${prompt}`;
+        const result = await chatSession.sendMessageStream(fullPrompt);
         
         const encoder = new TextEncoder();
         const stream = new ReadableStream({
@@ -46,4 +51,4 @@ export async function POST(request) {
             headers: { 'Content-Type': 'application/json' },
         });
     }
-} 
+}
